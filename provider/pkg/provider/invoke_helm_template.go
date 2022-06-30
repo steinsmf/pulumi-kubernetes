@@ -15,7 +15,9 @@
 package provider
 
 import (
+	"context"
 	"fmt"
+	"github.com/opentracing/opentracing-go"
 	"io/ioutil"
 	"net/url"
 	"os"
@@ -73,7 +75,10 @@ type HelmChartOpts struct {
 
 // helmTemplate performs Helm fetch/pull + template operations and returns the resulting YAML manifest based on the
 // provided chart options.
-func helmTemplate(opts HelmChartOpts) (string, error) {
+func helmTemplate(ctx context.Context, opts HelmChartOpts) (string, error) {
+	span, _ := opentracing.StartSpanFromContext(ctx, "helmTemplate")
+	defer span.Finish()
+
 	tempDir, err := ioutil.TempDir("", "helm")
 	if err != nil {
 		return "", err

@@ -15,6 +15,8 @@
 package provider
 
 import (
+	"context"
+	"github.com/opentracing/opentracing-go"
 	"io/ioutil"
 	"os"
 
@@ -27,7 +29,11 @@ import (
 
 // kustomizeDirectory takes a path to a kustomization directory, either a local directory or a folder in a git repo,
 // and then returns a slice of untyped structs that can be marshalled into Pulumi RPC calls.
-func kustomizeDirectory(directory string, clientSet *clients.DynamicClientSet) ([]interface{}, error) {
+func kustomizeDirectory(ctx context.Context, directory string, clientSet *clients.DynamicClientSet) ([]interface{},
+	error) {
+	span, ctx := opentracing.StartSpanFromContext(ctx, "kustomizeDirectory")
+	defer span.Finish()
+
 	path := directory
 
 	// If provided directory doesn't exist locally, assume it's a git repo link.
@@ -63,5 +69,5 @@ func kustomizeDirectory(directory string, clientSet *clients.DynamicClientSet) (
 		return nil, errors.Wrap(err, "failed to convert kustomize result to YAML")
 	}
 
-	return decodeYaml(string(yamlBytes), "", clientSet)
+	return decodeYaml(ctx, string(yamlBytes), "", clientSet)
 }

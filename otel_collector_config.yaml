@@ -1,0 +1,49 @@
+receivers:
+  zipkin:
+  jaeger:
+    protocols:
+      thrift_http:
+        endpoint: "0.0.0.0:14268"
+  otlp:
+    protocols:
+      grpc: # on port 4317
+      http: # on port 4318
+#  prometheus:
+#    config:
+#      scrape_configs:
+#        - job_name: "prometheus"
+#          scrape_interval: 15s
+#          static_configs:
+#            - targets: ["0.0.0.0:9100"]
+
+processors:
+  batch:
+
+exporters:
+  otlp:
+    endpoint: "api.honeycomb.io:443"
+    headers:
+      "x-honeycomb-team": "YjhYKeU9GXdnT55nxJIXTC"
+      "x-honeycomb-dataset": "pulumi-prov-tracing"
+  otlp/metrics:
+    endpoint: "api.honeycomb.io:443"
+    headers:
+      "x-honeycomb-team": "YjhYKeU9GXdnT55nxJIXTC"
+      "x-honeycomb-dataset": "pulumi-prov-metrics"
+
+extensions:
+  health_check:
+  pprof:
+  zpages:
+
+service:
+  extensions: [health_check, pprof, zpages]
+  pipelines:
+    traces:
+      receivers: [jaeger, otlp, zipkin]
+      processors: [batch]
+      exporters: [otlp/metrics]
+    #metrics:
+    #  receivers: [prometheus]
+    #  processors: []
+    #  exporters: [otlp/metrics]

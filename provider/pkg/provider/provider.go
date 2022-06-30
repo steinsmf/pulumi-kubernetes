@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opentracing/opentracing-go"
 	"io/ioutil"
 	"net/http"
 	"net/url"
@@ -384,6 +385,9 @@ func (k *kubeProvider) DiffConfig(ctx context.Context, req *pulumirpc.DiffReques
 
 // Configure configures the resource provider with "globals" that control its behavior.
 func (k *kubeProvider) Configure(_ context.Context, req *pulumirpc.ConfigureRequest) (*pulumirpc.ConfigureResponse, error) {
+	label := fmt.Sprintf("%s.Configure(%s)", k.label())
+	logger.V(9).Infof("%s executing vars: %+v", label, req.GetVariables())
+
 	const trueStr = "true"
 
 	vars := req.GetVariables()
@@ -703,6 +707,7 @@ func (k *kubeProvider) Configure(_ context.Context, req *pulumirpc.ConfigureRequ
 			warningConfig := rest.CopyConfig(config)
 			warningConfig.WarningHandler = rest.NoWarnings{}
 			k.config = warningConfig
+			k.config.Wrap(traceInjector())
 			k.kubeconfig = kubeconfig
 		}
 	}
@@ -784,8 +789,7 @@ func (k *kubeProvider) Invoke(ctx context.Context,
 		if defaultNsArg := args["defaultNamespace"]; defaultNsArg.HasValue() && defaultNsArg.IsString() {
 			defaultNamespace = defaultNsArg.StringValue()
 		}
-
-		result, err := decodeYaml(text, defaultNamespace, k.clientSet)
+		result, err := decodeYaml(ctx, text, defaultNamespace, k.clientSet)
 		if err != nil {
 			return nil, err
 		}
@@ -814,13 +818,13 @@ func (k *kubeProvider) Invoke(ctx context.Context,
 			return nil, pkgerrors.Wrap(err, "failed to unmarshal 'jsonOpts'")
 		}
 
-		text, err := helmTemplate(opts)
+		text, err := helmTemplate(ctx, opts)
 		if err != nil {
 			return nil, pkgerrors.Wrap(err, "failed to generate YAML for specified Helm chart")
 		}
 
 		// Decode the generated YAML here to avoid an extra invoke in the client.
-		result, err := decodeYaml(text, opts.Namespace, k.clientSet)
+		result, err := decodeYaml(ctx, text, opts.Namespace, k.clientSet)
 		if err != nil {
 			return nil, pkgerrors.Wrap(err, "failed to decode YAML for specified Helm chart")
 		}
@@ -844,7 +848,7 @@ func (k *kubeProvider) Invoke(ctx context.Context,
 			return nil, pkgerrors.New("missing required field 'directory' of type string")
 		}
 
-		result, err := kustomizeDirectory(directory, k.clientSet)
+		result, err := kustomizeDirectory(ctx, directory, k.clientSet)
 		if err != nil {
 			return nil, err
 		}
@@ -1536,8 +1540,12 @@ func (k *kubeProvider) Diff(ctx context.Context, req *pulumirpc.DiffRequest) (*p
 
 	fieldManager := fieldManagerName(newResInputs, newInputs)
 
+	span, _ := opentracing.StartSpanFromContext(ctx, "/pulumirpc.ResourceProvider/Diff",
+		opentracing.Tag{Key: "urn", Value: urn})
+	defer span.Finish()
+	spanCtx := opentracing.ContextWithSpan(k.canceler.context, span)
 	// Try to compute a server-side patch.
-	ssPatch, ssPatchBase, ssPatchOk, err := k.tryServerSidePatch(oldInputs, newInputs, gvk, fieldManager)
+	ssPatch, ssPatchBase, ssPatchOk, err := k.tryServerSidePatch(spanCtx, oldInputs, newInputs, gvk, fieldManager)
 	if err != nil {
 		return nil, err
 	}
@@ -1598,7 +1606,7 @@ func (k *kubeProvider) Diff(ctx context.Context, req *pulumirpc.DiffRequest) (*p
 		switch newInputs.GetKind() {
 		case "Job":
 			// Fetch current Job status and check point-in-time readiness. Errors are ignored.
-			if live, err := k.readLiveObject(newInputs); err == nil {
+			if live, err := k.readLiveObject(spanCtx, newInputs); err == nil {
 				jobChecker := checkjob.NewJobChecker()
 				job, err := clients.FromUnstructured(live)
 				if err == nil {
@@ -1740,9 +1748,15 @@ func (k *kubeProvider) Create(
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "Failed to fetch OpenAPI schema from the API server")
 	}
+
+	span, _ := opentracing.StartSpanFromContext(ctx, "/pulumirpc.ResourceProvider/Create",
+		opentracing.Tag{Key: "urn", Value: urn})
+	defer span.Finish()
+	spanCtx := opentracing.ContextWithSpan(k.canceler.context, span)
+
 	config := await.CreateConfig{
 		ProviderConfig: await.ProviderConfig{
-			Context:           k.canceler.context,
+			Context:           spanCtx,
 			Host:              k.host,
 			URN:               urn,
 			InitialAPIVersion: initialAPIVersion,
@@ -1956,9 +1970,15 @@ func (k *kubeProvider) Read(ctx context.Context, req *pulumirpc.ReadRequest) (*p
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "Failed to fetch OpenAPI schema from the API server")
 	}
+
+	span, _ := opentracing.StartSpanFromContext(ctx, "/pulumirpc.ResourceProvider/Read",
+		opentracing.Tag{Key: "urn", Value: urn})
+	defer span.Finish()
+	spanCtx := opentracing.ContextWithSpan(k.canceler.context, span)
+
 	config := await.ReadConfig{
 		ProviderConfig: await.ProviderConfig{
-			Context:           k.canceler.context,
+			Context:           spanCtx,
 			Host:              k.host,
 			URN:               urn,
 			InitialAPIVersion: initialAPIVersion,
@@ -2227,9 +2247,15 @@ func (k *kubeProvider) Update(
 	if err != nil {
 		return nil, pkgerrors.Wrapf(err, "Failed to fetch OpenAPI schema from the API server")
 	}
+
+	span, _ := opentracing.StartSpanFromContext(ctx, "/pulumirpc.ResourceProvider/Update",
+		opentracing.Tag{Key: "urn", Value: urn})
+	defer span.Finish()
+	spanCtx := opentracing.ContextWithSpan(k.canceler.context, span)
+
 	config := await.UpdateConfig{
 		ProviderConfig: await.ProviderConfig{
-			Context:           k.canceler.context,
+			Context:           spanCtx,
 			Host:              k.host,
 			URN:               urn,
 			InitialAPIVersion: initialAPIVersion,
@@ -2263,7 +2289,7 @@ func (k *kubeProvider) Update(
 		}
 
 		var getErr error
-		initialized, getErr = k.readLiveObject(newInputs)
+		initialized, getErr = k.readLiveObject(spanCtx, newInputs)
 		if getErr != nil {
 			// Object update/creation failed.
 			return nil, pkgerrors.Wrapf(
@@ -2306,7 +2332,7 @@ func (k *kubeProvider) Update(
 				return nil, err
 			}
 
-			err = ssa.Relinquish(k.canceler.context, client, newInputs, fieldManagerOld)
+			err = ssa.Relinquish(spanCtx, client, newInputs, fieldManagerOld)
 			if err != nil {
 				return nil, err
 			}
@@ -2375,9 +2401,14 @@ func (k *kubeProvider) Delete(ctx context.Context, req *pulumirpc.DeleteRequest)
 		return nil, pkgerrors.Wrapf(err, "Failed to fetch OpenAPI schema from the API server")
 	}
 
+	span, _ := opentracing.StartSpanFromContext(ctx, "/pulumirpc.ResourceProvider/Create",
+		opentracing.Tag{Key: "urn", Value: urn})
+	defer span.Finish()
+	spanCtx := opentracing.ContextWithSpan(k.canceler.context, span)
+
 	config := await.DeleteConfig{
 		ProviderConfig: await.ProviderConfig{
-			Context:           k.canceler.context, // TODO: should this just be ctx from the args?
+			Context:           spanCtx, // TODO: should this just be ctx from the args?
 			Host:              k.host,
 			URN:               urn,
 			InitialAPIVersion: initialAPIVersion,
@@ -2500,7 +2531,8 @@ func (k *kubeProvider) gvkFromURN(urn resource.URN) (schema.GroupVersionKind, er
 	}, nil
 }
 
-func (k *kubeProvider) readLiveObject(obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+func (k *kubeProvider) readLiveObject(ctx context.Context, obj *unstructured.Unstructured) (*unstructured.Unstructured,
+	error) {
 	rc, err := k.clientSet.ResourceClientForObject(obj)
 	if err != nil {
 		return nil, err
@@ -2508,10 +2540,11 @@ func (k *kubeProvider) readLiveObject(obj *unstructured.Unstructured) (*unstruct
 
 	// Get the "live" version of the last submitted object. This is necessary because the server may
 	// have populated some fields automatically, updated status fields, and so on.
-	return rc.Get(k.canceler.context, obj.GetName(), metav1.GetOptions{})
+	return rc.Get(ctx, obj.GetName(), metav1.GetOptions{})
 }
 
-func (k *kubeProvider) serverSidePatch(oldInputs, newInputs *unstructured.Unstructured, fieldManager string,
+func (k *kubeProvider) serverSidePatch(ctx context.Context, oldInputs, newInputs *unstructured.Unstructured,
+	fieldManager string,
 ) ([]byte, map[string]interface{}, error) {
 
 	client, err := k.clientSet.ResourceClient(oldInputs.GroupVersionKind(), oldInputs.GetNamespace())
@@ -2519,17 +2552,17 @@ func (k *kubeProvider) serverSidePatch(oldInputs, newInputs *unstructured.Unstru
 		return nil, nil, err
 	}
 
-	liveObject, err := client.Get(k.canceler.context, oldInputs.GetName(), metav1.GetOptions{})
+	liveObject, err := client.Get(ctx, oldInputs.GetName(), metav1.GetOptions{})
 	if err != nil {
 		return nil, nil, err
 	}
 
 	// If the new resource does not exist, we need to dry-run a Create rather than a Patch.
 	var newObject *unstructured.Unstructured
-	_, err = client.Get(k.canceler.context, newInputs.GetName(), metav1.GetOptions{})
+	_, err = client.Get(ctx, newInputs.GetName(), metav1.GetOptions{})
 	switch {
 	case errors.IsNotFound(err):
-		newObject, err = client.Create(k.canceler.context, newInputs, metav1.CreateOptions{
+		newObject, err = client.Create(ctx, newInputs, metav1.CreateOptions{
 			DryRun: []string{metav1.DryRunAll},
 		})
 	case newInputs.GetNamespace() != oldInputs.GetNamespace():
@@ -2537,7 +2570,7 @@ func (k *kubeProvider) serverSidePatch(oldInputs, newInputs *unstructured.Unstru
 		if err != nil {
 			return nil, nil, err
 		}
-		newObject, err = client.Create(k.canceler.context, newInputs, metav1.CreateOptions{
+		newObject, err = client.Create(ctx, newInputs, metav1.CreateOptions{
 			DryRun: []string{metav1.DryRunAll},
 		})
 		if err != nil {
@@ -2556,7 +2589,7 @@ func (k *kubeProvider) serverSidePatch(oldInputs, newInputs *unstructured.Unstru
 			}
 
 			newObject, err = client.Patch(
-				k.canceler.context, newInputs.GetName(), types.ApplyPatchType, objYAML, metav1.PatchOptions{
+				ctx, newInputs.GetName(), types.ApplyPatchType, objYAML, metav1.PatchOptions{
 					DryRun:       []string{metav1.DryRunAll},
 					FieldManager: fieldManager,
 					Force:        &force,
@@ -2577,7 +2610,7 @@ func (k *kubeProvider) serverSidePatch(oldInputs, newInputs *unstructured.Unstru
 				return nil, nil, err
 			}
 
-			newObject, err = client.Patch(k.canceler.context, newInputs.GetName(), patchType, patch, metav1.PatchOptions{
+			newObject, err = client.Patch(ctx, newInputs.GetName(), patchType, patch, metav1.PatchOptions{
 				DryRun: []string{metav1.DryRunAll},
 			})
 			if err != nil {
@@ -2653,6 +2686,7 @@ func (k *kubeProvider) isDryRunDisabledError(err error) bool {
 
 // tryServerSidePatch attempts to compute a server-side patch. Returns true iff the operation succeeded.
 func (k *kubeProvider) tryServerSidePatch(
+	ctx context.Context,
 	oldInputs, newInputs *unstructured.Unstructured,
 	gvk schema.GroupVersionKind,
 	fieldManager string,
@@ -2672,7 +2706,7 @@ func (k *kubeProvider) tryServerSidePatch(
 		return nil, nil, false, nil
 	}
 
-	ssPatch, ssPatchBase, err = k.serverSidePatch(oldInputs, newInputs, fieldManager)
+	ssPatch, ssPatchBase, err = k.serverSidePatch(ctx, oldInputs, newInputs, fieldManager)
 	if k.isDryRunDisabledError(err) {
 		return nil, nil, false, err
 	}

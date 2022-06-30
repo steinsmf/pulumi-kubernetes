@@ -346,7 +346,7 @@ func (r *helmReleaseProvider) Check(ctx context.Context, req *pulumirpc.CheckReq
 			return nil, err
 		}
 
-		resourceNames, err := r.computeResourceNames(new)
+		resourceNames, err := r.computeResourceNames(ctx, new)
 		if err != nil {
 			return nil, err
 		}
@@ -1072,12 +1072,12 @@ func (r *helmReleaseProvider) Delete(ctx context.Context, req *pulumirpc.DeleteR
 	return &pbempty.Empty{}, nil
 }
 
-func (r *helmReleaseProvider) computeResourceNames(rel *Release) (map[string][]string, error) {
+func (r *helmReleaseProvider) computeResourceNames(ctx context.Context, rel *Release) (map[string][]string, error) {
 	logger.V(9).Infof("Looking up resource names for release: %q: %#v", rel.Name, rel)
 	helmChartOpts := r.chartOptsFromRelease(rel)
 
 	logger.V(9).Infof("About to template: %+v", helmChartOpts)
-	templ, err := helmTemplate(helmChartOpts)
+	templ, err := helmTemplate(ctx, helmChartOpts)
 	if err != nil {
 		return nil, err
 	}

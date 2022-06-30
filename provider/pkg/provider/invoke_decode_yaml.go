@@ -15,6 +15,8 @@
 package provider
 
 import (
+	"context"
+	"github.com/opentracing/opentracing-go"
 	"io"
 	"io/ioutil"
 	"strings"
@@ -26,9 +28,13 @@ import (
 
 // decodeYaml parses a YAML string, and then returns a slice of untyped structs that can be marshalled into
 // Pulumi RPC calls. If a default namespace is specified, set that on the relevant decoded objects.
-func decodeYaml(text, defaultNamespace string, clientSet *clients.DynamicClientSet) ([]interface{}, error) {
+func decodeYaml(ctx context.Context, text, defaultNamespace string,
+	clientSet *clients.DynamicClientSet) ([]interface{}, error) {
 	var resources []unstructured.Unstructured
 
+	span, _ := opentracing.StartSpanFromContext(ctx, "decodeYaml")
+	defer span.Finish()
+	
 	dec := yaml.NewYAMLOrJSONDecoder(ioutil.NopCloser(strings.NewReader(text)), 128)
 	for {
 		var value map[string]interface{}
