@@ -211,9 +211,8 @@ class Directory(pulumi.ComponentResource):
 
     @property
     @pulumi.getter
-    def resources(self) -> pulumi.Output[Optional[str]]:
+    def resources(self) -> pulumi.Output[Optional[list]]:
         """
         Resources created by the Directory resource.
         """
         return pulumi.get(self, "resources")
-
